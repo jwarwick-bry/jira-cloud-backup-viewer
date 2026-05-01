@@ -22,8 +22,8 @@ namespace JiraCloudBackupViewer
 
         public bool IsMatch(string keyword)
         {
-            return Description?.Contains(keyword, StringComparison.InvariantCultureIgnoreCase) ?? false
-                || Summary.Contains(keyword, StringComparison.InvariantCultureIgnoreCase)
+            return (Description?.Contains(keyword, StringComparison.InvariantCultureIgnoreCase) ?? false)
+                || (Summary?.Contains(keyword, StringComparison.InvariantCultureIgnoreCase) ?? false)
                 || Actions.Any(a => a.Body?.Contains(keyword, StringComparison.InvariantCultureIgnoreCase) ?? false);
         }
     }

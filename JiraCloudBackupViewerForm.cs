@@ -6,6 +6,7 @@ using System.Data;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -53,9 +54,11 @@ namespace JiraCloudBackupViewer
             webView21.CoreWebView2.SetVirtualHostNameToFolderMapping("attachment.path", $"{basePath}\\data\\attachments", Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);            
 
             //Fix invalid chars and load Xml
-            string r = "[\x00-\x08\x0B\x0C\x0E-\x1F\x26]";
             var s = File.ReadAllText(filename, System.Text.Encoding.UTF8);
-            s = Regex.Replace(s, r, "", RegexOptions.Compiled);
+            // Remove invalid XML control characters (excluding tab \x09, LF \x0A, CR \x0D)
+            s = Regex.Replace(s, "[\x00-\x08\x0B\x0C\x0E-\x1F]", "", RegexOptions.Compiled);
+            // Replace bare & not part of a valid XML entity reference with &amp;
+            s = Regex.Replace(s, @"&(?!([a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#x[0-9a-fA-F]+);)", "&amp;", RegexOptions.Compiled);
             using (var sr = new StringReader(s))
                 XDocument = XDocument.Load(sr);
 
@@ -114,13 +117,23 @@ namespace JiraCloudBackupViewer
 
                 var sections = new List<string>();
                 sections.Add(string.Concat(si.FileAttachments
-                    .Select(fa => @$"<strong>{fa.Filename}</strong>
-                        <a target='attachmentWindow' onclick=""window.open('http://attachment.path/{si.ProjectKey}/10000/{si.IssueNr}/{fa.Id}','attachmentWindow'); return false;"" href='http://attachment.path/{si.ProjectKey}/10000/{si.IssueNr}/{fa.Id}' download='{fa.Filename}'>preview</a>
-                        <a target='attachmentWindow' onclick=""openfordownload('http://attachment.path/{si.ProjectKey}/10000/{si.IssueNr}/{fa.Id}','{fa.Filename}'); return false;"" href='http://attachment.path/{si.ProjectKey}/10000/{si.IssueNr}/{fa.Id}' download='{fa.Filename}'>download</a>
-                        <br />")));
+                    .Select(fa =>
+                    {
+                        var attachUrl = $"http://attachment.path/{UrlPathE(si.ProjectKey)}/10000/{UrlPathE(si.IssueNr)}/{UrlPathE(fa.Id)}";
+                        var htmlUrl = HtmlE(attachUrl);
+                        var htmlFilename = HtmlE(fa.Filename);
+                        var jsFilename = HtmlE(JsStringE(fa.Filename));
+                        return $@"<strong>{htmlFilename}</strong>
+                        <a target='attachmentWindow' onclick=""window.open('{htmlUrl}','attachmentWindow'); return false;"" href='{htmlUrl}' download='{htmlFilename}'>preview</a>
+                        <a target='attachmentWindow' onclick=""openfordownload('{htmlUrl}','{jsFilename}'); return false;"" href='{htmlUrl}' download='{htmlFilename}'>download</a>
+                        <br />";
+                    })));
                 sections.Add(Md2Html(Jira2Md(textBoxIssue.Text ?? string.Empty)));
-                sections.AddRange(si.Actions.OrderBy(a => a.Created).Select(a => @$"<h3 class='jcv';>{a.Type} - {a.Created} - {(Users.ContainsKey(a.Author) ? Users[a.Author] : a.Author)}</h3>
-                    {Md2Html(Jira2Md(a.Body ?? string.Empty))}"));
+                sections.AddRange(si.Actions.OrderBy(a => a.Created).Select(a =>
+                {
+                    var displayName = Users.ContainsKey(a.Author) ? Users[a.Author] : a.Author;
+                    return $"<h3 class='jcv';>{HtmlE(a.Type)} - {a.Created} - {HtmlE(displayName)}</h3>\n    {Md2Html(Jira2Md(a.Body ?? string.Empty))}";
+                }));
                 webView21.NavigateToString(@$"<style>body {{ font-family: sans-serif; }} h3.jcv {{
     color:navy;
     background-color: rgba(0,0,100,0.05);
@@ -158,7 +171,7 @@ var w = window.open('','attachmentWindow');
 }}
 </script>
 
-                    <section><h2 style='color:navy;'>{si.IssueNr} - {si.Created} - {si.Summary}</h2>
+                    <section><h2 style='color:navy;'>{HtmlE(si.IssueNr)} - {si.Created} - {HtmlE(si.Summary)}</h2>
                     {string.Join($"</section><section>", sections)}</section>"); 
 
                 textBoxIssue.Text = textBoxIssue.Text.Replace("\r", "").Replace("\n", "\r\n");
@@ -213,7 +226,7 @@ var w = window.open('','attachmentWindow');
 
             // Headers 1-6
             jira = Regex.Replace(jira, @"^h([0-6])\.(.*)$",
-                match => string.Join("#", Enumerable.Repeat(string.Empty, match.Index + 1)) + match.Value,
+                match => string.Join("#", Enumerable.Repeat(string.Empty, int.Parse(match.Groups[1].Value) + 1)) + " " + match.Groups[2].Value.TrimStart(),
                 RegexOptions.Multiline);
             // Bold
             jira = Regex.Replace(jira, @"\*(\S.*)\*", "**$1**");
@@ -232,9 +245,8 @@ var w = window.open('','attachmentWindow');
             // Strikethrough
             jira = Regex.Replace(jira, @"(\s+)-(\S+.*?\S)-(\s+)", "$1~~$2~~$3");
             // Code Block
-            jira = Regex.Replace(jira, @"\{code(:([a-z]+))?([:|]?(title|borderStyle|borderColor|borderWidth|bgColor|titleBGColor)=.+?)*\}(.*?)\n?\{code\}",
-                "```$2$5\n```",
-                RegexOptions.Singleline);
+            jira = new Regex(@"\{code(:([a-z]+))?([:|]?(title|borderStyle|borderColor|borderWidth|bgColor|titleBGColor)=.+?)*\}(.*?)\n?\{code\}",
+                RegexOptions.Singleline, RegexTimeout).Replace(jira, "```$2$5\n```");
             // Pre-formatted text
             jira = Regex.Replace(jira, @"{noformat}", "```");
             // Un-named Links
@@ -246,11 +258,10 @@ var w = window.open('','attachmentWindow');
             // Single Paragraph Blockquote
             jira = Regex.Replace(jira, @"^bq\.\s+", "> ", RegexOptions.Multiline);
             // Remove color: unsupported in md
-            jira = Regex.Replace(jira, @"\{color:[^}]+\}(.*?)\{color\}", "$1", RegexOptions.Singleline);
+            jira = new Regex(@"\{color:[^}]+\}(.*?)\{color\}", RegexOptions.Singleline, RegexTimeout).Replace(jira, "$1");
             // panel into table
-            jira = Regex.Replace(jira, @"\{panel:title=([^}]*)\}\n?(.*?)\n?\{panel\}",
-                "\n| $1 |\n| --- |\n| $2 |",
-                RegexOptions.Singleline);
+            jira = new Regex(@"\{panel:title=([^}]*)\}\n?(.*?)\n?\{panel\}", RegexOptions.Singleline, RegexTimeout).Replace(jira,
+                "\n| $1 |\n| --- |\n| $2 |");
             // table header
             jira = Regex.Replace(jira, @"^[ \t]*((?:\|\|.*?)+\|\|)[ \t]*$",
                 match =>
@@ -266,7 +277,7 @@ var w = window.open('','attachmentWindow');
 
         public string Md2Html(string markdown)
         {
-            var pipeline = new MarkdownPipelineBuilder() { DebugLog = Console.Out }
+            var pipeline = new MarkdownPipelineBuilder()
                 .UseAdvancedExtensions()
                 .UseAutoLinks()
                 .Build();
@@ -283,6 +294,29 @@ var w = window.open('','attachmentWindow');
         private void buttonOpen_Click(object sender, EventArgs e)
         {
             OpenEntitiesXml();
+        }
+
+        // Encoding helpers for safe HTML generation
+        private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(5);
+
+        private static string HtmlE(string s) =>
+            WebUtility.HtmlEncode(s ?? string.Empty);
+
+        private static string UrlPathE(string s) =>
+            Uri.EscapeDataString(s ?? string.Empty);
+
+        private static string JsStringE(string s)
+        {
+            if (s is null) return string.Empty;
+            return s.Replace("\\", "\\\\")
+                    .Replace("'", "\\'")
+                    .Replace("\"", "\\\"")
+                    .Replace("/", "\\/")
+                    .Replace("\b", "\\b")
+                    .Replace("\f", "\\f")
+                    .Replace("\t", "\\t")
+                    .Replace("\r", "\\r")
+                    .Replace("\n", "\\n");
         }
     }
 }
