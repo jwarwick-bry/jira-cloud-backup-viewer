@@ -54,7 +54,7 @@ jobs:
 
             ### Requirements
             - Windows x64
-            - A Jira Cloud backup export (see [README](README.md) for details)
+            - A Jira Cloud backup export (see [README](https://github.com/jwarwick-bry/jira-cloud-backup-viewer/blob/main/README.md) for details)
           files: JiraCloudBackupViewer-${{ github.ref_name }}-win-x64.zip
           draft: false
           prerelease: false
