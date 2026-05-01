@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Publish self-contained single-file executable
+        run: >
+          dotnet publish JiraCloudBackupViewer.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          --output publish/
+
+      - name: Zip release artifact
+        run: Compress-Archive -Path publish\* -DestinationPath JiraCloudBackupViewer-${{ github.ref_name }}-win-x64.zip
+        shell: pwsh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: JiraCloudBackupViewer ${{ github.ref_name }}
+          body: |
+            ## JiraCloudBackupViewer ${{ github.ref_name }}
+
+            Windows 64-bit self-contained executable. No .NET installation required.
+
+            ### Installation
+            1. Download `JiraCloudBackupViewer-${{ github.ref_name }}-win-x64.zip`
+            2. Extract the zip file
+            3. Run `JiraCloudBackupViewer.exe`
+
+            ### Requirements
+            - Windows x64
+            - A Jira Cloud backup export (see [README](README.md) for details)
+          files: JiraCloudBackupViewer-${{ github.ref_name }}-win-x64.zip
+          draft: false
+          prerelease: false
