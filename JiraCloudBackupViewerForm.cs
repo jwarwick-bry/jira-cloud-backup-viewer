@@ -364,7 +364,7 @@ function hostAction(action, path, filename) {{
 
         // Encoding helpers for safe HTML generation
         private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(5);
-        private static readonly string[] ApproverUserColumnNames = { "APPROVER_USER_KEY", "USER_KEY", "APPROVER", "USER", "USERNAME", "AUTHOR" };
+        private static readonly string[] ApproverUserColumnNames = { "APPROVER_USER_KEY", "USER_KEY", "APPROVER" };
         private static readonly string[] ApproverRoleColumnNames = { "APPROVER_ROLE", "ROLE" };
         private static readonly string[] ApprovalStatusColumnNames = { "DECISION", "STATUS", "RESPONSE" };
 
@@ -460,7 +460,8 @@ function hostAction(action, path, filename) {{
             if (string.IsNullOrWhiteSpace(value))
                 return null;
 
-            if (DateTime.TryParse(value, out var parsed))
+            if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed)
+                || DateTime.TryParse(value, out parsed))
                 return parsed;
             return null;
         }
