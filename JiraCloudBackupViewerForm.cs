@@ -3,11 +3,13 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -41,6 +43,54 @@ namespace JiraCloudBackupViewer
         private async Task InitializeAsync()
         {
             await webView21.EnsureCoreWebView2Async(null);
+            webView21.WebMessageReceived += WebView21_WebMessageReceived;
+        }
+
+        private void WebView21_WebMessageReceived(object sender, Microsoft.Web.WebView2.Core.CoreWebView2WebMessageReceivedEventArgs e)
+        {
+            try
+            {
+                var msg = JsonDocument.Parse(e.WebMessageAsJson);
+                var action = msg.RootElement.GetProperty("action").GetString();
+                var path = msg.RootElement.GetProperty("path").GetString();
+                // Path.GetFileName strips any directory components from the filename to prevent path traversal
+                var filename = Path.GetFileName(msg.RootElement.GetProperty("filename").GetString());
+
+                if (!File.Exists(path)) return;
+
+                if (action == "preview")
+                {
+                    // Copy to a temp file with the original filename so the OS picks the correct default app
+                    var tempDir = Path.Combine(Path.GetTempPath(), "JiraCloudBackupViewer");
+                    Directory.CreateDirectory(tempDir);
+                    var tempPath = Path.Combine(tempDir, filename);
+                    File.Copy(path, tempPath, overwrite: true);
+                    // UseShellExecute opens the file with the user's default application
+                    Process.Start(new ProcessStartInfo(tempPath) { UseShellExecute = true });
+                }
+                else if (action == "download")
+                {
+                    using var sfd = new SaveFileDialog();
+                    sfd.FileName = filename;
+                    if (sfd.ShowDialog() == DialogResult.OK)
+                    {
+                        File.Copy(path, sfd.FileName, overwrite: true);
+                    }
+                }
+            }
+            catch (JsonException) { /* ignore malformed messages */ }
+            catch (IOException) { /* ignore file access errors */ }
+        }
+
+        private void CleanupTempFiles()
+        {
+            try
+            {
+                var tempDir = Path.Combine(Path.GetTempPath(), "JiraCloudBackupViewer");
+                if (Directory.Exists(tempDir))
+                    Directory.Delete(tempDir, recursive: true);
+            }
+            catch (IOException) { /* best-effort cleanup */ }
         }
 
         private string basePath;
@@ -51,7 +101,6 @@ namespace JiraCloudBackupViewer
             Application.DoEvents();
 
             basePath = Path.GetDirectoryName(filename);
-            webView21.CoreWebView2.SetVirtualHostNameToFolderMapping("attachment.path", $"{basePath}\\data\\attachments", Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);            
 
             //Fix invalid chars and load Xml
             var s = File.ReadAllText(filename, System.Text.Encoding.UTF8);
@@ -119,13 +168,13 @@ namespace JiraCloudBackupViewer
                 sections.Add(string.Concat(si.FileAttachments
                     .Select(fa =>
                     {
-                        var attachUrl = $"http://attachment.path/{UrlPathE(si.ProjectKey)}/10000/{UrlPathE(si.IssueNr)}/{UrlPathE(fa.Id)}";
-                        var htmlUrl = HtmlE(attachUrl);
+                        var localPath = Path.Combine(basePath, "data", "attachments", si.ProjectKey, "10000", si.IssueNr, fa.Id);
                         var htmlFilename = HtmlE(fa.Filename);
-                        var jsFilename = HtmlE(JsStringE(fa.Filename));
+                        var jsLocalPath = JsStringE(localPath);
+                        var jsFilename = JsStringE(fa.Filename);
                         return $@"<strong>{htmlFilename}</strong>
-                        <a target='attachmentWindow' onclick=""window.open('{htmlUrl}','attachmentWindow'); return false;"" href='{htmlUrl}' download='{htmlFilename}'>preview</a>
-                        <a target='attachmentWindow' onclick=""openfordownload('{htmlUrl}','{jsFilename}'); return false;"" href='{htmlUrl}' download='{htmlFilename}'>download</a>
+                        <a href='#' onclick=""hostAction('preview','{jsLocalPath}','{jsFilename}'); return false;"">preview</a>
+                        <a href='#' onclick=""hostAction('download','{jsLocalPath}','{jsFilename}'); return false;"">download</a>
                         <br />";
                     })));
                 sections.Add(Md2Html(Jira2Md(textBoxIssue.Text ?? string.Empty)));
@@ -142,32 +191,8 @@ namespace JiraCloudBackupViewer
     border-style: solid none;
 }}</style>
 <script>
-function openfordownload(url, filename){{
-    fetch(url)
-        .then(resp => resp.blob())
-        .then(blobobject => {{
-            const blob = window.URL.createObjectURL(blobobject);
-            const anchor = document.createElement('a');
-            anchor.style.display = 'none';
-            anchor.href = blob;
-            anchor.download = filename;
-            anchor.target = 'attachmentWindow';
-            document.body.appendChild(anchor);
-            anchor.click();
-            document.body.removeChild(anchor);
-            window.URL.revokeObjectURL(blob);
-        }})
-}}
-
-function preview(url, filename) {{
-var w = window.open('','attachmentWindow');
-    var downloadLink = document.createElement('a');
-    downloadLink.href = url;
-    downloadLink.download = filename
-    downloadLink.target = 'attachmentWindow';
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
+function hostAction(action, path, filename) {{
+    window.chrome.webview.postMessage(JSON.stringify({{action: action, path: path, filename: filename}}));
 }}
 </script>
 
@@ -178,6 +203,11 @@ var w = window.open('','attachmentWindow');
             }
             else
                 dataGridView2.DataSource = null;
+        }
+
+        private void JiraCloudBackupViewerForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            CleanupTempFiles();
         }
 
         private void exitToolStripMenuItem_Click(object sender, EventArgs e)
@@ -301,9 +331,6 @@ var w = window.open('','attachmentWindow');
 
         private static string HtmlE(string s) =>
             WebUtility.HtmlEncode(s ?? string.Empty);
-
-        private static string UrlPathE(string s) =>
-            Uri.EscapeDataString(s ?? string.Empty);
 
         private static string JsStringE(string s)
         {
