@@ -292,6 +292,7 @@ namespace JiraCloudBackupViewer
             this.Name = "JiraCloudBackupViewerForm";
             this.Text = "JIRA Cloud backup search tool";
             this.Load += new System.EventHandler(this.Form1_Load);
+            this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.JiraCloudBackupViewerForm_FormClosing);
             ((System.ComponentModel.ISupportInitialize)(this.dataGridView1)).EndInit();
             this.splitContainer1.Panel1.ResumeLayout(false);
             this.splitContainer1.Panel2.ResumeLayout(false);
