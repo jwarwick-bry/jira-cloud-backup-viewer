@@ -24,7 +24,7 @@ namespace JiraCloudBackupViewer
         private Dictionary<string, SearchIssue> Issues { get; set; }
             = new Dictionary<string, SearchIssue>();
         private Dictionary<string, string> Users{ get; set; }
-            = new Dictionary<string, string>();
+            = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
 
         public List<SearchIssue> SearchResults { get; set; }
 
@@ -112,7 +112,14 @@ namespace JiraCloudBackupViewer
                 XDocument = XDocument.Load(sr);
 
             Issues = XDocument.Descendants("Issue").ToDictionary(i => i.Attribute("id").Value, i => new SearchIssue { Issue = i });
-            Users = XDocument.Descendants("User").ToDictionary(i => i.Attribute("userName").Value, i => i.Attribute("displayName").Value);
+            Users = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
+            foreach (var u in XDocument.Descendants("User"))
+            {
+                var displayName = u.Attribute("displayName")?.Value;
+                AddUserMapping(u.Attribute("userName")?.Value, displayName);
+                AddUserMapping(u.Attribute("userKey")?.Value, displayName);
+                AddUserMapping(u.Attribute("name")?.Value, displayName);
+            }
 
             foreach (var a in XDocument.Descendants("Action"))
             {
@@ -130,6 +137,8 @@ namespace JiraCloudBackupViewer
                     Issues[issueid].FileAttachments.Add(new SearchFileAttachment { FileAttachment = fa });
                 }
             }
+
+            LoadApprovalsFromActiveObjects();
 
             toolStripStatusLabel1.Text = $"{filename} loaded. Use search keywords to look for something.";
         }
@@ -180,16 +189,42 @@ namespace JiraCloudBackupViewer
                 sections.Add(Md2Html(Jira2Md(textBoxIssue.Text ?? string.Empty)));
                 sections.AddRange(si.Actions.OrderBy(a => a.Created).Select(a =>
                 {
-                    var displayName = Users.ContainsKey(a.Author) ? Users[a.Author] : a.Author;
+                    var displayName = ResolveUserDisplayName(a.Author);
                     return $"<h3 class='jcv';>{HtmlE(a.Type)} - {a.Created} - {HtmlE(displayName)}</h3>\n    {Md2Html(Jira2Md(a.Body ?? string.Empty))}";
                 }));
+                if (si.Approvals.Any())
+                {
+                    sections.Add($@"<h3 class='jcv jcv-approvals-title'>Approvals</h3>
+<table class='jcv-approvals'>
+<thead>
+<tr><th>Approver</th><th>Role</th><th>Approved at</th><th>Status</th></tr>
+</thead>
+<tbody>
+{string.Concat(si.Approvals.OrderBy(a => a.ApprovedAt ?? DateTime.MaxValue).Select(a => $"<tr><td>{HtmlE(a.Approver)}</td><td>{HtmlE(a.Role)}</td><td>{HtmlE(a.ApprovedAt?.ToString() ?? string.Empty)}</td><td>{HtmlE(a.Status)}</td></tr>"))}
+</tbody>
+</table>");
+                }
                 webView21.NavigateToString(@$"<style>body {{ font-family: sans-serif; }} h3.jcv {{
     color:navy;
     background-color: rgba(0,0,100,0.05);
     padding: 5px;font-family: monospace;
     border: 1px solid navy;
     border-style: solid none;
-}}</style>
+}}
+table.jcv-approvals {{
+    border-collapse: collapse;
+    width: 100%;
+}}
+table.jcv-approvals th, table.jcv-approvals td {{
+    border: 1px solid #d0d7de;
+    text-align: left;
+    padding: 6px;
+    font-size: 0.95rem;
+}}
+h3.jcv-approvals-title {{
+    margin-top: 24px;
+}}
+</style>
 <script>
 function hostAction(action, path, filename) {{
     window.chrome.webview.postMessage(JSON.stringify({{action: action, path: path, filename: filename}}));
@@ -344,6 +379,126 @@ function hostAction(action, path, filename) {{
                     .Replace("\t", "\\t")
                     .Replace("\r", "\\r")
                     .Replace("\n", "\\n");
+        }
+
+        private void LoadApprovalsFromActiveObjects()
+        {
+            var activeObjectsPath = Path.Combine(basePath, "activeobjects.xml");
+            if (!File.Exists(activeObjectsPath))
+                return;
+
+            XDocument activeObjectsDocument;
+            try
+            {
+                var xml = File.ReadAllText(activeObjectsPath, Encoding.UTF8);
+                xml = Regex.Replace(xml, "[\x00-\x08\x0B\x0C\x0E-\x1F]", "", RegexOptions.Compiled);
+                xml = Regex.Replace(xml, @"&(?!([a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#x[0-9a-fA-F]+);)", "&amp;", RegexOptions.Compiled);
+                using var sr = new StringReader(xml);
+                activeObjectsDocument = XDocument.Load(sr);
+            }
+            catch
+            {
+                return;
+            }
+
+            var approvals = activeObjectsDocument
+                .Descendants()
+                .Where(e => e.Name.LocalName.EndsWith("_APPROVAL", StringComparison.InvariantCultureIgnoreCase))
+                .ToList();
+            var approvers = activeObjectsDocument
+                .Descendants()
+                .Where(e => e.Name.LocalName.EndsWith("_APPROVER", StringComparison.InvariantCultureIgnoreCase))
+                .ToList();
+
+            if (!approvers.Any())
+                return;
+
+            var approvalToIssue = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
+
+            foreach (var approval in approvals)
+            {
+                var approvalId = GetColumnValue(approval, "ID");
+                var issueId = GetColumnValue(approval, "ISSUE_ID", "ISSUE", "REQUEST_ID");
+                if (string.IsNullOrWhiteSpace(approvalId) || string.IsNullOrWhiteSpace(issueId))
+                    continue;
+
+                approvalToIssue[approvalId] = issueId;
+            }
+
+            foreach (var approver in approvers)
+            {
+                var issueId = GetColumnValue(approver, "ISSUE_ID", "ISSUE", "REQUEST_ID");
+                var approvalId = GetColumnValue(approver, "APPROVAL_ID");
+                if (string.IsNullOrWhiteSpace(issueId) && !string.IsNullOrWhiteSpace(approvalId))
+                    approvalToIssue.TryGetValue(approvalId, out issueId);
+
+                if (string.IsNullOrWhiteSpace(issueId) || !Issues.TryGetValue(issueId, out var issue))
+                    continue;
+
+                var approverName = ResolveUserDisplayName(GetColumnValue(approver,
+                    "APPROVER_USER_KEY", "USER_KEY", "APPROVER", "USER", "USERNAME", "AUTHOR"));
+                var role = GetColumnValue(approver, "APPROVER_ROLE", "ROLE");
+                var approvedAt = ParseDateTimeNullable(GetColumnValue(approver,
+                    "DECIDED_DATE", "APPROVED_DATE", "UPDATED", "UPDATED_DATE", "CREATED"));
+                var status = GetColumnValue(approver, "DECISION", "STATUS", "RESPONSE");
+
+                issue.Approvals.Add(new SearchApproval
+                {
+                    Approver = string.IsNullOrWhiteSpace(approverName) ? "(unknown)" : approverName,
+                    Role = string.IsNullOrWhiteSpace(role) ? "Approver" : role,
+                    ApprovedAt = approvedAt,
+                    Status = string.IsNullOrWhiteSpace(status) ? "Pending" : status
+                });
+            }
+        }
+
+        private static DateTime? ParseDateTimeNullable(string value)
+        {
+            if (DateTime.TryParse(value, out var parsed))
+                return parsed;
+            return null;
+        }
+
+        private static string GetColumnValue(XElement row, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                var attributeMatch = row.Attributes().FirstOrDefault(a =>
+                    string.Equals(a.Name.LocalName, name, StringComparison.InvariantCultureIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(attributeMatch?.Value))
+                    return attributeMatch.Value;
+
+                var childMatch = row.Elements().FirstOrDefault(e =>
+                    string.Equals(e.Name.LocalName, name, StringComparison.InvariantCultureIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(childMatch?.Value))
+                    return childMatch.Value;
+
+                var namedColumnMatch = row.Elements().FirstOrDefault(e =>
+                    string.Equals(e.Attribute("name")?.Value, name, StringComparison.InvariantCultureIgnoreCase)
+                    || string.Equals(e.Attribute("column")?.Value, name, StringComparison.InvariantCultureIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(namedColumnMatch?.Value))
+                    return namedColumnMatch.Value;
+            }
+
+            return null;
+        }
+
+        private void AddUserMapping(string key, string displayName)
+        {
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(displayName))
+                return;
+
+            Users[key] = displayName;
+        }
+
+        private string ResolveUserDisplayName(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                return string.Empty;
+
+            return Users.TryGetValue(key, out var displayName)
+                ? displayName
+                : key;
         }
     }
 }

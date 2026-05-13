@@ -20,6 +20,8 @@ namespace JiraCloudBackupViewer
 
         public List<SearchFileAttachment> FileAttachments { get; set; } = new List<SearchFileAttachment>();
 
+        public List<SearchApproval> Approvals { get; set; } = new List<SearchApproval>();
+
         public bool IsMatch(string keyword)
         {
             return (Description?.Contains(keyword, StringComparison.InvariantCultureIgnoreCase) ?? false)
@@ -55,5 +57,13 @@ namespace JiraCloudBackupViewer
         public string Filename => FileAttachment?.Attribute("filename")?.Value;
 
         public XElement FileAttachment { get; set; }
+    }
+
+    public class SearchApproval
+    {
+        public string Approver { get; set; }
+        public string Role { get; set; }
+        public DateTime? ApprovedAt { get; set; }
+        public string Status { get; set; }
     }
 }
