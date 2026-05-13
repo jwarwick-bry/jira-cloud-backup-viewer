@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Data;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -200,7 +201,7 @@ namespace JiraCloudBackupViewer
 <tr><th>Approver</th><th>Role</th><th>Approved at</th><th>Status</th></tr>
 </thead>
 <tbody>
-{string.Concat(si.Approvals.OrderBy(a => a.ApprovedAt ?? DateTime.MaxValue).Select(a => $"<tr><td>{HtmlE(a.Approver)}</td><td>{HtmlE(a.Role)}</td><td>{HtmlE(a.ApprovedAt?.ToString() ?? string.Empty)}</td><td>{HtmlE(a.Status)}</td></tr>"))}
+{string.Concat(si.Approvals.OrderBy(a => a.ApprovedAt ?? DateTime.MinValue).Select(BuildApprovalRowHtml))}
 </tbody>
 </table>");
                 }
@@ -363,6 +364,9 @@ function hostAction(action, path, filename) {{
 
         // Encoding helpers for safe HTML generation
         private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(5);
+        private static readonly string[] ApproverUserColumnNames = { "APPROVER_USER_KEY", "USER_KEY", "APPROVER", "USER", "USERNAME", "AUTHOR" };
+        private static readonly string[] ApproverRoleColumnNames = { "APPROVER_ROLE", "ROLE" };
+        private static readonly string[] ApprovalStatusColumnNames = { "DECISION", "STATUS", "RESPONSE" };
 
         private static string HtmlE(string s) =>
             WebUtility.HtmlEncode(s ?? string.Empty);
@@ -435,12 +439,11 @@ function hostAction(action, path, filename) {{
                 if (string.IsNullOrWhiteSpace(issueId) || !Issues.TryGetValue(issueId, out var issue))
                     continue;
 
-                var approverName = ResolveUserDisplayName(GetColumnValue(approver,
-                    "APPROVER_USER_KEY", "USER_KEY", "APPROVER", "USER", "USERNAME", "AUTHOR"));
-                var role = GetColumnValue(approver, "APPROVER_ROLE", "ROLE");
+                var approverName = ResolveUserDisplayName(GetColumnValue(approver, ApproverUserColumnNames));
+                var role = GetColumnValue(approver, ApproverRoleColumnNames);
                 var approvedAt = ParseDateTimeNullable(GetColumnValue(approver,
                     "DECIDED_DATE", "APPROVED_DATE", "UPDATED", "UPDATED_DATE", "CREATED"));
-                var status = GetColumnValue(approver, "DECISION", "STATUS", "RESPONSE");
+                var status = GetColumnValue(approver, ApprovalStatusColumnNames);
 
                 issue.Approvals.Add(new SearchApproval
                 {
@@ -454,6 +457,9 @@ function hostAction(action, path, filename) {{
 
         private static DateTime? ParseDateTimeNullable(string value)
         {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
             if (DateTime.TryParse(value, out var parsed))
                 return parsed;
             return null;
@@ -499,6 +505,12 @@ function hostAction(action, path, filename) {{
             return Users.TryGetValue(key, out var displayName)
                 ? displayName
                 : key;
+        }
+
+        private static string BuildApprovalRowHtml(SearchApproval approval)
+        {
+            var approvedAt = approval.ApprovedAt?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? string.Empty;
+            return $"<tr><td>{HtmlE(approval.Approver)}</td><td>{HtmlE(approval.Role)}</td><td>{HtmlE(approvedAt)}</td><td>{HtmlE(approval.Status)}</td></tr>";
         }
     }
 }
